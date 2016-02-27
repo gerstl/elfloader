@@ -1,6 +1,7 @@
 /****************************************************************************
  * ARMv7M ELF loader
  * Copyright (c) 2013-2015 Martin Ribelotta 
+ * Copyright (c) 2016 Andreas Gerstlauer
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,12 +35,57 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef DOX
+
+#ifdef VALVANOWARE
+
+#include "ff.h"
+#include "heap.h"
+#include "UART2.h"
+#include "os.h"
+
+typedef unsigned long int off_t;
+typedef void(entry_t)(void);
+
+#define LOADER_FD_T FIL *
+FIL* LOADER_OPEN_FOR_RD(const TCHAR* path) { 
+	static FIL fd;		// only one open file at a time
+  if(f_open(&fd, path, FA_READ)) return NULL;
+  return &fd;
+}
+#define LOADER_FD_VALID(fd) (fd != NULL)
+UINT LOADER_READ(FIL* fd, void *buffer, size_t size) { UINT r;
+  if(f_read(fd, buffer, size, &r)) return 0;
+  return r;
+}
+UINT LOADER_WRITE(FIL* fd, void* buffer, size_t size) { UINT w;
+  if(f_write(fd, buffer, size, &w)) return 0;
+  return w;
+}
+#define LOADER_CLOSE(fd) f_close(fd)
+#define LOADER_SEEK_FROM_START(fd, off) f_lseek(fd, off)
+#define LOADER_TELL(fd) (fd->fptr)
+
+#define LOADER_ALIGN_ALLOC(size, align, perm) Heap_Malloc(size)
+#define LOADER_FREE(ptr) Heap_Free(ptr)
+void LOADER_CLEAR(void* ptr, size_t size) { int i; int32_t *p;
+  for(p = ptr, i = 0; i < size; i++, p++) *p = 0;
+}
+#define LOADER_STREQ(s1, s2) (strcmp(s1, s2) == 0)
+
+#define LOADER_JUMP_TO(entry, text, data) OS_AddProcess(entry, text, data, 128, 1)
+
+#define DBG(...) 
+#define ERR(msg) UART_OutString("ELF: " msg "\n\r")
+#define MSG(msg) UART_OutString("ELF: " msg "\n\r")
+
+#else // VALVANOWARE
+
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-
-#ifndef DOX
 
 #if 0
 #define LOADER_FD_T FILE *
@@ -78,18 +124,20 @@ extern int is_streq(const char *s1, const char *s2);
 #define LOADER_STREQ(s1, s2) (is_streq(s1, s2))
 
 #if 0
-#define LOADER_JUMP_TO(entry) entry();
+#define LOADER_JUMP_TO(entry, text, data) entry();
 #else
 
 extern void arch_jumpTo(entry_t entry);
 
-#define LOADER_JUMP_TO(entry) arch_jumpTo(entry)
+#define LOADER_JUMP_TO(entry, text, data) arch_jumpTo(entry)
 
 #endif
 
 #define DBG(...) printf("ELF: " __VA_ARGS__)
 #define ERR(msg) do { perror("ELF: " msg); __asm__ volatile ("bkpt"); } while(0)
 #define MSG(msg) puts("ELF: " msg)
+
+#endif  // VALVANOWARE
 
 #else
 
