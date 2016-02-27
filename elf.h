@@ -557,6 +557,7 @@ typedef struct
 #define R_ARM_ME_TOO             128           /* Obsolete */
 #define R_ARM_THM_TLS_DESCSEQ16  129           /* Thumb16 */
 #define R_ARM_THM_TLS_DESCSEQ32  130           /* Thumb32 */
+#define R_ARM_RBASE              255           /* No relocation */
 
 /* 5.2.1 Platform architecture compatibility data */
 

@@ -36,7 +36,7 @@
 #endif
 #include "loader_config.h"
 
-#define IS_FLAGS_SET(v, m) ((v&m) == m)
+#define IS_FLAGS_SET(v, m) (((v)&(m)) == (m))
 #define SECTION_OFFSET(e, n) (e->sectionTable + n * sizeof(Elf32_Shdr))
 #define SEGMENT_OFFSET(e, n) (e->programHeaderTable + n * sizeof(Elf32_Phdr))
 
@@ -359,7 +359,7 @@ static Elf32_Addr addressOf(ELFExec_t *e, Elf32_Sym *sym, const char *sName) {
   return 0xffffffff;
 }
 
-static int relocate(ELFExec_t *e, size_t relEntries, ofs_t relOfs,
+static int relocate(ELFExec_t *e, size_t relEntries, off_t relOfs,
                     void *s) {
   if (s) {
     Elf32_Rel rel;
@@ -376,6 +376,8 @@ static int relocate(ELFExec_t *e, size_t relEntries, ofs_t relOfs,
         int relType = ELF32_R_TYPE(rel.r_info);
         Elf32_Addr relAddr = ((Elf32_Addr) s) + rel.r_offset;
 
+				if ((relType == R_ARM_NONE) || (relType == R_ARM_RBASE)) continue;
+				
         readSymbol(e, symEntry, &sym, name, sizeof(name));
         DBG(" %08X %08X %-16s %s\n", (unsigned int) rel.r_offset, (unsigned int) rel.r_info, typeStr(relType),
             name);
@@ -446,23 +448,23 @@ static int placeInfo(ELFExec_t *e, Elf32_Shdr *sh, const char *name, int n) {
 }
 
 static int placeDynamic(ELFExec_t *e, Elf32_Phdr *ph, int n) {
-  int founded = 0;
+  int founded = FoundLoadDynamic;
+	Elf32_Dyn dyn;
   if (LOADER_SEEK_FROM_START(e->fd, ph->p_offset) != 0)
     return FoundERROR;
   do {
-    Elf32_Dyn dyn;
     if (LOADER_READ(e->fd, &dyn, sizeof(Elf32_Dyn)) != sizeof(Elf32_Dyn))
-      return FoundError;
+      return FoundERROR;
     if (dyn.d_tag == DT_STRTAB) {
-      e->symbolTableStrings = dyn.d_ptr + ph->p_offset;
+      e->symbolTableStrings = dyn.d_un.d_ptr + ph->p_offset;
       founded |= FoundStrTab;      
     } else if (dyn.d_tag == DT_SYMTAB) {
-      e->symbolTable = dyn.d_ptr + ph->p_offset;
+      e->symbolTable = dyn.d_un.d_ptr + ph->p_offset;
       founded |= FoundSymTab;
     } else if (dyn.d_tag == DT_REL) {
-      e->relTable = dyn.d_ptr + ph->p_offset;
+      e->relTable = dyn.d_un.d_ptr + ph->p_offset;
     } else if (dyn.d_tag == DT_RELSZ) {
-      e->relCount = dyn.d_val / sizeof(Elf32_Rel);
+      e->relCount = dyn.d_un.d_val / sizeof(Elf32_Rel);
       founded |= FoundRelText;
     }
   } while(dyn.d_tag != DT_NULL);
@@ -581,8 +583,8 @@ static int relocateSection(ELFExec_t *e, ELFSection_t *s, const char *name) {
   if (s->relSecIdx) {
     Elf32_Shdr sectHdr;
     if (readSecHeader(e, s->relSecIdx, &sectHdr) == 0)
-      return relocate(e, secHdr.sh_size / sizeof(Elf32_Rel),
-                      secHdr.sh_offset, s->data);
+      return relocate(e, sectHdr.sh_size / sizeof(Elf32_Rel),
+                      sectHdr.sh_offset, s->data);
     else {
       ERR("Error reading section header");
       return -1;
@@ -639,7 +641,7 @@ int exec_elf(const char *path, const ELFEnv_t *env) {
     founded |= loadProgram(&exec);
     if (IS_FLAGS_SET(founded, FoundProgram)) {
       int ret = -1;
-      if (IS_FLAGS_SET(founded, FoundValid | FoundDynamic)) {
+      if (IS_FLAGS_SET(founded, FoundValid | FoundLoadDynamic)) {
         relocateProgram(&exec);
       }
       ret = jumpTo(exec.entry,
