@@ -63,6 +63,9 @@ typedef struct {
   size_t segments;
   off_t programHeaderTable;
 
+  off_t relTable;
+  size_t relCount;
+  
   ELFSegment_t loadText;
   ELFSegment_t loadData;  
 
@@ -101,6 +104,7 @@ typedef enum {
   FoundRelBss = (1 << 10),
   FoundLoadData = (1 << 11),
   FoundLoadText = (1 << 12),
+  FoundLoadDynamic = (1 << 13),
   FoundValid = FoundSymTab | FoundStrTab,
   FoundExec = FoundValid | FoundText,
   FoundProgram = FoundLoadData | FoundLoadText,
@@ -355,13 +359,12 @@ static Elf32_Addr addressOf(ELFExec_t *e, Elf32_Sym *sym, const char *sName) {
   return 0xffffffff;
 }
 
-static int relocate(ELFExec_t *e, Elf32_Shdr *h, ELFSection_t *s,
-                    const char *name) {
-  if (s->data) {
+static int relocate(ELFExec_t *e, size_t relEntries, ofs_t relOfs,
+                    void *s) {
+  if (s) {
     Elf32_Rel rel;
-    size_t relEntries = h->sh_size / sizeof(rel);
     size_t relCount;
-    (void) LOADER_SEEK_FROM_START(e->fd, h->sh_offset);
+    (void) LOADER_SEEK_FROM_START(e->fd, relOfs);
     DBG(" Offset   Info     Type             Name\n");
     for (relCount = 0; relCount < relEntries; relCount++) {
       if (LOADER_READ(e->fd, &rel, sizeof(rel)) == sizeof(rel)) {
@@ -371,7 +374,7 @@ static int relocate(ELFExec_t *e, Elf32_Shdr *h, ELFSection_t *s,
         char name[33] = "<unnamed>";
         int symEntry = ELF32_R_SYM(rel.r_info);
         int relType = ELF32_R_TYPE(rel.r_info);
-        Elf32_Addr relAddr = ((Elf32_Addr) s->data) + rel.r_offset;
+        Elf32_Addr relAddr = ((Elf32_Addr) s) + rel.r_offset;
 
         readSymbol(e, symEntry, &sym, name, sizeof(name));
         DBG(" %08X %08X %-16s %s\n", (unsigned int) rel.r_offset, (unsigned int) rel.r_info, typeStr(relType),
@@ -394,7 +397,7 @@ static int relocate(ELFExec_t *e, Elf32_Shdr *h, ELFSection_t *s,
   return -1;
 }
 
-int placeInfo(ELFExec_t *e, Elf32_Shdr *sh, const char *name, int n) {
+static int placeInfo(ELFExec_t *e, Elf32_Shdr *sh, const char *name, int n) {
   if (LOADER_STREQ(name, ".symtab")) {
     e->symbolTable = sh->sh_offset;
     e->symbolCount = sh->sh_size / sizeof(Elf32_Sym);
@@ -427,10 +430,10 @@ int placeInfo(ELFExec_t *e, Elf32_Shdr *sh, const char *name, int n) {
     return FoundRelText;
   } else if (LOADER_STREQ(name, ".rel.rodata")) {
     e->rodata.relSecIdx = n;
-    return FoundRelText;
+    return FoundRelRodata;
   } else if (LOADER_STREQ(name, ".rel.data")) {
     e->data.relSecIdx = n;
-    return FoundRelText;
+    return FoundRelData;
   }
   /* BSS not need relocation */
 #if 0
@@ -441,6 +444,32 @@ int placeInfo(ELFExec_t *e, Elf32_Shdr *sh, const char *name, int n) {
 #endif
   return 0;
 }
+
+static int placeDynamic(ELFExec_t *e, Elf32_Phdr *ph, int n) {
+  int founded = 0;
+  if (LOADER_SEEK_FROM_START(e->fd, ph->p_offset) != 0)
+    return FoundERROR;
+  do {
+    Elf32_Dyn dyn;
+    if (LOADER_READ(e->fd, &dyn, sizeof(Elf32_Dyn)) != sizeof(Elf32_Dyn))
+      return FoundError;
+    if (dyn.d_tag == DT_STRTAB) {
+      e->symbolTableStrings = dyn.d_ptr + ph->p_offset;
+      founded |= FoundStrTab;      
+    } else if (dyn.d_tag == DT_SYMTAB) {
+      e->symbolTable = dyn.d_ptr + ph->p_offset;
+      founded |= FoundSymTab;
+    } else if (dyn.d_tag == DT_REL) {
+      e->relTable = dyn.d_ptr + ph->p_offset;
+    } else if (dyn.d_tag == DT_RELSZ) {
+      e->relCount = dyn.d_val / sizeof(Elf32_Rel);
+      founded |= FoundRelText;
+    }
+  } while(dyn.d_tag != DT_NULL);
+  
+  return founded;
+}
+
 
 static int loadSymbols(ELFExec_t *e) {
   int n;
@@ -475,6 +504,12 @@ static int loadProgram(ELFExec_t *e) {
       return -1;
     }
 
+    if (ph.p_type == PT_DYNAMIC) {
+      DBG("Examining dynamic segment %d\n", n);
+      founded |= placeDynamic(e, &ph, n);
+      continue;
+    }
+    
     if (ph.p_type != PT_LOAD) continue;
                 
     DBG("Examining segment %d\n", n);
@@ -490,8 +525,6 @@ static int loadProgram(ELFExec_t *e) {
       e->loadText.segIdx = n;
       founded |= FoundLoadText;
     }
-    if (IS_FLAGS_SET(founded, FoundProgram))
-      return FoundProgram;
   }
   MSG("Done");
   return founded;
@@ -548,7 +581,8 @@ static int relocateSection(ELFExec_t *e, ELFSection_t *s, const char *name) {
   if (s->relSecIdx) {
     Elf32_Shdr sectHdr;
     if (readSecHeader(e, s->relSecIdx, &sectHdr) == 0)
-      return relocate(e, &sectHdr, s, name);
+      return relocate(e, secHdr.sh_size / sizeof(Elf32_Rel),
+                      secHdr.sh_offset, s->data);
     else {
       ERR("Error reading section header");
       return -1;
@@ -567,6 +601,15 @@ static int relocateSections(ELFExec_t *e) {
     | relocateSection(e, &e->bss, ".bss")
 #endif
     ;
+}
+
+static int relocateProgram(ELFExec_t *e) {
+  DBG("Relocating program\n");
+  if (e->relCount) {
+    return relocate(e, e->relCount, e->relTable, e->loadText.data);
+  } else
+    MSG("No relocation entries"); /* Not an error */
+  return 0;
 }
 
 static int jumpTo(off_t ofs, void* text, void* data) {
@@ -592,8 +635,13 @@ int exec_elf(const char *path, const ELFEnv_t *env) {
   exec.env = env;
 
   if (exec.type == ET_EXEC) {
-    if (IS_FLAGS_SET(loadProgram(&exec), FoundProgram)) {
-			int ret = -1;
+    int founded = 0;
+    founded |= loadProgram(&exec);
+    if (IS_FLAGS_SET(founded, FoundProgram)) {
+      int ret = -1;
+      if (IS_FLAGS_SET(founded, FoundValid | FoundDynamic)) {
+        relocateProgram(&exec);
+      }
       ret = jumpTo(exec.entry,
                    exec.loadText.data, exec.loadData.data);
       freeElf(&exec);
@@ -601,7 +649,8 @@ int exec_elf(const char *path, const ELFEnv_t *env) {
     } else {
       MSG("Invalid PROGRAM");
       return -1;
-    }        
+    }
+  } else {
     if (IS_FLAGS_SET(loadSymbols(&exec), FoundValid)) {
       int ret = -1;
       if (relocateSections(&exec) == 0)
@@ -613,5 +662,5 @@ int exec_elf(const char *path, const ELFEnv_t *env) {
       return -1;
     }
   }
-	return -1;
+  return -1;
 }
