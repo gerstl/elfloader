@@ -40,6 +40,7 @@
 
 #ifdef VALVANOWARE
 
+#include <stdint.h>
 #include "ff.h"
 #include "heap.h"
 #include "UART2.h"
@@ -70,7 +71,7 @@ UINT LOADER_WRITE(FIL* fd, void* buffer, size_t size) { UINT w;
 #define LOADER_ALIGN_ALLOC(size, align, perm) Heap_Malloc(size)
 #define LOADER_FREE(ptr) Heap_Free(ptr)
 void LOADER_CLEAR(void* ptr, size_t size) { int i; int32_t *p;
-  for(p = ptr, i = 0; i < size; i++, p++) *p = 0;
+  for(p = ptr, i = 0; i < size/sizeof(int32_t); i++, p++) *p = 0;
 }
 #define LOADER_STREQ(s1, s2) (strcmp(s1, s2) == 0)
 
