@@ -517,13 +517,17 @@ static int loadProgram(ELFExec_t *e) {
     DBG("Examining segment %d\n", n);
 
     if (ph.p_flags & PF_W) {
-      if (loadSegData(e, &e->loadData, &ph) == -1)
+      if (loadSegData(e, &e->loadData, &ph) == -1) {
+        freeSegment(&e->loadText);
         return FoundERROR;
+      }
       e->loadData.segIdx = n;
       founded |= FoundLoadData;
     } else if (ph.p_flags & PF_X) {
-      if (loadSegData(e, &e->loadText, &ph) == -1)
+      if (loadSegData(e, &e->loadText, &ph) == -1) {
+        freeSegment(&e->loadData);
         return FoundERROR;
+      }
       e->loadText.segIdx = n;
       founded |= FoundLoadText;
     }
